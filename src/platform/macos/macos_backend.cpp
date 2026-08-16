@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 // platform includes
 #include <ApplicationServices/ApplicationServices.h>
@@ -507,8 +508,57 @@ namespace lvh::detail {
         if (event.text.empty()) {
           return OperationStatus::success();
         }
+        if (!state_->keyboard_source) {
+          return OperationStatus::failure(backend_failure, "macOS keyboard event source is unavailable");
+        }
 
-        return OperationStatus::failure(unsupported_profile, "macOS keyboard text input is not implemented");
+        CFStringRef text = CFStringCreateWithBytes(
+          kCFAllocatorDefault,
+          reinterpret_cast<const UInt8 *>(event.text.data()),
+          static_cast<CFIndex>(event.text.size()),
+          kCFStringEncodingUTF8,
+          false
+        );
+        if (!text) {
+          return OperationStatus::failure(invalid_argument, "text is not valid UTF-8");
+        }
+
+        const CFIndex length = CFStringGetLength(text);
+        std::vector<UniChar> units(static_cast<std::size_t>(length));
+        CFStringGetCharacters(text, CFRangeMake(0, length), units.data());
+        CFRelease(text);
+
+        std::lock_guard lock {state_->keyboard_mutex};
+        for (CFIndex i = 0; i < length; i++) {
+          // A surrogate pair is one character in two code units and has to go in one event, or
+          // each half arrives unpaired and nothing is typed.
+          CFIndex span = 1;
+          if (CFStringIsSurrogateHighCharacter(units[static_cast<std::size_t>(i)]) &&
+              i + 1 < length &&
+              CFStringIsSurrogateLowCharacter(units[static_cast<std::size_t>(i + 1)])) {
+            span = 2;
+          }
+
+          for (const bool pressed : {true, false}) {
+            const auto keyboard_event = CGEventCreateKeyboardEvent(state_->keyboard_source, 0, pressed);
+            if (!keyboard_event) {
+              return OperationStatus::failure(backend_failure, "create macOS keyboard event");
+            }
+            // A keycode of 0 carrying a Unicode payload is how macOS accepts text that no key
+            // can spell — a Chinese character, an emoji, anything a client composed elsewhere.
+            CGEventKeyboardSetUnicodeString(keyboard_event, span, &units[static_cast<std::size_t>(i)]);
+            // Cleared rather than inherited: held modifiers belong to the keys the client is
+            // sending, not to text it has already composed. A held Command would turn a typed
+            // character into a menu shortcut.
+            CGEventSetFlags(keyboard_event, static_cast<CGEventFlags>(0));
+            CGEventPost(kCGSessionEventTap, keyboard_event);
+            CFRelease(keyboard_event);
+          }
+
+          i += span - 1;
+        }
+
+        return OperationStatus::success();
       }
 
       OperationStatus close() override {
