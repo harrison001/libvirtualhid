@@ -500,6 +500,26 @@ namespace lvh::detail {
     virtual const BackendCapabilities &capabilities() const = 0;
 
     /**
+     * @brief Tell the backend which display pointer coordinates belong to.
+     *
+     * Pointer positions are meaningful only against a display: absolute coordinates are a fraction
+     * of one, and relative movement has to be held inside one or the pointer wanders somewhere the
+     * caller is not looking. A backend that does not know which display it is aiming at can only
+     * assume, and the assumption is wrong for anyone streaming their second monitor.
+     *
+     * The identifier is whatever the platform calls a display, so it is passed through as text —
+     * a CoreGraphics display id on macOS, a device name on Windows. A backend that has no use for
+     * it ignores it, which is why this is not pure.
+     *
+     * @param display_id Platform-specific display identifier, or empty for the primary display.
+     * @return Operation status; success on backends that do not track a display.
+     */
+    virtual OperationStatus set_pointer_display(std::string_view display_id) {
+      (void) display_id;
+      return OperationStatus::success();
+    }
+
+    /**
      * @brief Create a backend gamepad device.
      *
      * @param id Runtime-assigned device id.

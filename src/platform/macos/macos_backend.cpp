@@ -6,12 +6,15 @@
 // standard includes
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 // platform includes
@@ -385,7 +388,7 @@ namespace lvh::detail {
     public:
       MacosInputState():
           display {CGMainDisplayID()},
-          display_scaling {display_scaling_for(display)},
+          display_scaling {display_scaling_for(display.load(std::memory_order_relaxed))},
           source {CGEventSourceCreate(kCGEventSourceStateHIDSystemState)},
           keyboard_source {CGEventSourceCreate(kCGEventSourceStatePrivate)},
           mouse_event {source ? CGEventCreate(source) : nullptr},
@@ -431,7 +434,26 @@ namespace lvh::detail {
         return scaling;
       }
 
-      CGDirectDisplayID display {};  ///< CoreGraphics identifier for the target display.
+      /// The bounds pointer coordinates are measured against, and clamped into.
+      ///
+      /// Empty bounds mean the display has been unplugged since it was chosen; the primary display
+      /// stands in, because clamping into an empty rectangle pins the pointer to a single point and
+      /// it stops moving at all.
+      CGRect display_bounds() const {
+        const CGRect bounds {CGDisplayBounds(display.load(std::memory_order_relaxed))};
+        if (bounds.size.width <= 0 || bounds.size.height <= 0) {
+          return CGDisplayBounds(CGMainDisplayID());
+        }
+        return bounds;
+      }
+
+      /// Which display pointer coordinates belong to.
+      ///
+      /// Written by whoever notices the captured display changed and read on every pointer event,
+      /// hence the atomic. It was fixed at construction until now, which left anyone streaming a
+      /// display other than the primary one with a pointer clamped into a rectangle belonging to a
+      /// display they could not see.
+      std::atomic<CGDirectDisplayID> display {};
       CGFloat display_scaling = 1.0;  ///< Scaling factor from logical to physical display pixels.
       CGEventSourceRef source {};  ///< CoreGraphics event source for mouse and scroll events.
       CGEventSourceRef keyboard_source {};  ///< CoreGraphics event source for keyboard events.
@@ -681,7 +703,7 @@ namespace lvh::detail {
       CGPoint current_location() const {
         const auto snapshot_event = CGEventCreate(state_->source);
         if (!snapshot_event) {
-          const auto display_bounds = CGDisplayBounds(state_->display);
+          const auto display_bounds = state_->display_bounds();
           return display_bounds.origin;
         }
 
@@ -697,7 +719,7 @@ namespace lvh::detail {
         CGPoint previous_location,
         int click_count
       ) const {
-        const auto display_bounds = CGDisplayBounds(state_->display);
+        const auto display_bounds = state_->display_bounds();
         const auto location = CGPoint {
           std::clamp(raw_location.x, display_bounds.origin.x, display_bounds.origin.x + display_bounds.size.width - 1),
           std::clamp(raw_location.y, display_bounds.origin.y, display_bounds.origin.y + display_bounds.size.height - 1)
@@ -729,7 +751,7 @@ namespace lvh::detail {
       }
 
       OperationStatus submit_absolute_motion(const MouseEvent &event) {
-        const auto display_bounds = CGDisplayBounds(state_->display);
+        const auto display_bounds = state_->display_bounds();
         const auto location = absolute_mouse_location(event, display_bounds);
         const auto motion = macos_mouse_motion(mouse_down_);
         return post_mouse(motion.button, motion.event_type, location, current_location(), 0);
@@ -793,6 +815,29 @@ namespace lvh::detail {
 
       const BackendCapabilities &capabilities() const override {
         return capabilities_;
+      }
+
+      OperationStatus set_pointer_display(std::string_view display_id) override {
+        if (display_id.empty()) {
+          state_->display.store(CGMainDisplayID(), std::memory_order_relaxed);
+          return OperationStatus::success();
+        }
+
+        CGDirectDisplayID parsed {};
+        const auto *const begin {display_id.data()};
+        const auto *const end {display_id.data() + display_id.size()};
+        if (const auto [ptr, ec] {std::from_chars(begin, end, parsed)}; ec != std::errc {} || ptr != end) {
+          return OperationStatus::failure(ErrorCode::invalid_argument, "display identifier is not a CoreGraphics display id");
+        }
+
+        // Refusing an id with no bounds keeps a typo from silently becoming "the pointer no longer
+        // works": display_bounds() would fall back to the primary display and nothing would say why.
+        if (const CGRect bounds {CGDisplayBounds(parsed)}; bounds.size.width <= 0 || bounds.size.height <= 0) {
+          return OperationStatus::failure(ErrorCode::invalid_argument, "no display with that identifier");
+        }
+
+        state_->display.store(parsed, std::memory_order_relaxed);
+        return OperationStatus::success();
       }
 
       BackendGamepadCreationResult create_gamepad(DeviceId /*id*/, const CreateGamepadOptions & /*options*/) override {
