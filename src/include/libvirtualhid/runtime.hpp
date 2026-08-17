@@ -1031,6 +1031,19 @@ namespace lvh {
     BackendKind backend_kind() const;
 
     /**
+     * @brief Tell the backend which display pointer coordinates belong to.
+     *
+     * A pointer position only means something against a display: absolute coordinates are a
+     * fraction of one, and relative movement has to be kept inside one or the pointer wanders
+     * off somewhere the person moving it is not looking. Call this whenever the display being
+     * streamed changes, including when the session first picks one.
+     *
+     * @param display_id Platform display identifier, or empty for the primary display.
+     * @return Operation status. Backends with no notion of a display report success.
+     */
+    OperationStatus set_pointer_display(std::string_view display_id);
+
+    /**
      * @brief Create a gamepad from a profile.
      *
      * @param profile Device profile.

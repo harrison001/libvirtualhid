@@ -1054,6 +1054,10 @@ namespace lvh {
     return state_->options.backend;
   }
 
+  OperationStatus Runtime::set_pointer_display(std::string_view display_id) {
+    return state_->backend->set_pointer_display(display_id);
+  }
+
   GamepadCreationResult Runtime::create_gamepad(const DeviceProfile &profile) {
     CreateGamepadOptions options;
     options.profile = profile;
