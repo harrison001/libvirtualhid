@@ -515,7 +515,18 @@ namespace lvh::detail {
           CGEventSetType(keyboard_event, event.pressed ? kCGEventKeyDown : kCGEventKeyUp);
         }
 
-        CGEventSetFlags(keyboard_event, state_->keyboard_flags);
+        // Arrows have to look like arrows or the system will not act on them. A real arrow key
+        // carries NumericPad and SecondaryFn alongside whatever modifiers are down, and the
+        // Mission Control and Spaces shortcuts — Control with an arrow — are matched by the window
+        // server against the whole flag set rather than the keycode. Applications read the keycode
+        // and behave, so this shows up as a very narrow fault: every other combination works and
+        // only ^↑ ^↓ ^← ^→ are dead, with correctly formed events arriving at the tap.
+        CGEventFlags flags = state_->keyboard_flags;
+        if (*key == kVK_LeftArrow || *key == kVK_RightArrow || *key == kVK_UpArrow || *key == kVK_DownArrow) {
+          flags |= kCGEventFlagMaskNumericPad | kCGEventFlagMaskSecondaryFn;
+        }
+
+        CGEventSetFlags(keyboard_event, flags);
         CGEventPost(kCGSessionEventTap, keyboard_event);
         CFRelease(keyboard_event);
         return OperationStatus::success();
