@@ -577,8 +577,12 @@ namespace lvh::detail {
         std::lock_guard lock {state_->keyboard_mutex};
         CGEventKeyboardSetUnicodeString(key_down, characters.size(), characters.data());
         CGEventKeyboardSetUnicodeString(key_up, characters.size(), characters.data());
-        CGEventSetFlags(key_down, state_->keyboard_flags);
-        CGEventSetFlags(key_up, state_->keyboard_flags);
+        // Cleared rather than inherited. Held modifiers belong to the keys the client is
+        // sending, not to text it composed elsewhere and handed over as a string: a client
+        // holding Command while it sends text turns every character into a menu shortcut,
+        // so nothing is typed and menus fire instead.
+        CGEventSetFlags(key_down, static_cast<CGEventFlags>(0));
+        CGEventSetFlags(key_up, static_cast<CGEventFlags>(0));
         CGEventPost(kCGSessionEventTap, key_down);
         CGEventPost(kCGSessionEventTap, key_up);
         CFRelease(key_down);
